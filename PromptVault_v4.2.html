@@ -1,0 +1,1339 @@
+<!DOCTYPE html>
+<!-- Prompt Vault - A Smaller Hammer App
+     Copyright (c) 2026 Smaller Hammer
+     Licensed under the MIT License - see LICENSE file for details -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Prompt Vault</title>
+
+<!-- ============================================================
+     PROMPT VAULT — Ink & Brass single-file tool
+     Offline-first. No web fonts, no CDNs, no build step. Works from file://.
+     Stores text-to-image prompts with an optional reference image (client-side
+     resized + JPEG-compressed before storage), free-form tags, a notes/comments
+     field, and a copy-to-clipboard button.
+     Prompts flagged Protected are AES-GCM encrypted in place (key derived from a
+     PIN via PBKDF2-SHA256). The PIN unlocks all Protected prompts for the browser
+     session; nothing about a locked prompt's content — text, tags, comments,
+     image — is ever written to storage in the clear.
+     v4.0 removed the prompt Generator (tag categories, master groups, presets and the
+     builder). Any db.categories / db.groups / db.presets already saved are left
+     untouched in storage and in backups rather than deleted, so the removal is
+     reversible — nothing you generated is destroyed by upgrading.
+     Persists to localStorage; gzip-compressed JSON export/import is the backup.
+     Encrypted prompts stay encrypted inside the backup file too.
+     ============================================================ -->
+
+<style>
+:root{
+  --ink:#16202B;--ink-2:#243240;
+  --paper:#EAEEF2;--surface:#FFFFFF;--surface-2:#F6F8FA;
+  --muted:#5A6675;--faint:#8A95A3;
+  --line:#D8DFE6;--line-2:#E7ECF1;
+  --brass:#A8772C;--brass-hi:#C8943A;--brass-soft:#F3EAD8;
+  --gain:#1B7A4B;--gain-soft:#E4F1EA;--loss:#B5403A;--loss-soft:#F6E6E5;
+  --warn:#8A6414;--warn-soft:#F2E7CC;
+  --r:7px;--r-lg:11px;
+  --shadow:0 1px 2px rgba(22,32,43,.06),0 6px 20px rgba(22,32,43,.05);
+  --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  --mono:ui-monospace,"SF Mono","Cascadia Code","JetBrains Mono",Consolas,monospace;
+  --eyebrow-size:13px;
+}
+*{box-sizing:border-box}
+body{margin:0;font-family:var(--sans);font-size:14px;line-height:1.45;color:var(--ink);
+  background:var(--paper);-webkit-font-smoothing:antialiased}
+a{color:var(--brass)}
+
+/* ---- shell ---- */
+.app{display:grid;grid-template-columns:240px 1fr;min-height:100vh}
+.rail{background:var(--ink);color:#C9D3DD;padding:20px 14px;display:flex;flex-direction:column;gap:4px;
+  position:sticky;top:0;height:100vh;overflow-y:auto}
+.brand{display:flex;align-items:center;gap:6px;padding:4px 8px 18px;border-bottom:1px solid rgba(255,255,255,.08);margin:-16px 0 14px -14px}
+.brand .seal{width:56px;height:56px;flex:none;display:block}
+.brand b{color:#fff;font-size:14px;font-weight:650;letter-spacing:.02em;white-space:nowrap}
+.brand small{display:block;color:var(--faint);font-size:10px;letter-spacing:.1em;text-transform:uppercase;font-weight:600;white-space:nowrap}
+.nav{display:flex;flex-direction:column;gap:2px}
+.nav button{display:flex;align-items:center;gap:11px;background:none;border:0;color:#AEBAC6;padding:9px 11px;border-radius:var(--r);font-size:13.5px;text-align:left;cursor:pointer;width:100%}
+.nav button:hover{background:rgba(255,255,255,.05)}
+.nav button.on{background:rgba(200,148,58,.14);color:#fff}
+.nav button.on .ic{color:var(--brass-hi)}
+.nav .ic{width:17px;height:17px;color:#8595A4;flex:none}
+.railver{font-size:10.5px;color:var(--faint);letter-spacing:.04em;padding:12px 8px 0;margin-top:auto}
+.railver b{color:#9FB0C0;font-weight:600}
+.main{padding:26px 30px 60px;max-width:1180px}
+
+/* ---- type / page header ---- */
+.pagehead{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;margin-bottom:20px}
+.eyebrow{font-size:var(--eyebrow-size);letter-spacing:.12em;text-transform:uppercase;color:var(--brass);font-weight:700;margin-bottom:7px}
+h1{margin:0;font-size:22px;font-weight:680;letter-spacing:-.02em}
+.sub{color:var(--muted);font-size:13px;margin-top:3px}
+
+/* ---- grids ---- */
+.grid{display:grid;gap:16px}
+.cols-1{grid-template-columns:1fr}
+.cols-2{grid-template-columns:1fr 1fr}
+
+/* ---- cards ---- */
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);box-shadow:var(--shadow)}
+.cardhead{display:flex;justify-content:space-between;align-items:center;padding:14px 17px;border-bottom:1px solid var(--line)}
+.cardhead h3{margin:0;font-size:14px;font-weight:650}
+.cardhead .hint{font-size:12px;color:var(--faint)}
+.pad{padding:16px 17px}
+
+/* ---- pills / buttons / chips ---- */
+.pill{display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:999px;font-size:12px;font-weight:600}
+.pill.nsfw{background:var(--warn-soft);color:var(--warn)}
+/* key/value stat grid — same component as Prompt Forge's, so the two apps match */
+.kv{display:grid;grid-template-columns:150px 1fr;gap:6px 14px;font-size:13px}
+.kv div:nth-child(odd){color:var(--muted)}
+.num{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-variant-numeric:tabular-nums;letter-spacing:-.01em}
+.btn{border:1px solid var(--line);background:var(--surface);color:var(--ink);border-radius:var(--r);padding:8px 14px;font-size:13.5px;font-weight:550;cursor:pointer}
+.btn:hover{background:var(--surface-2)}
+.btn.brass{background:var(--brass);color:#fff;border-color:var(--brass)}
+.btn.brass:hover{background:#946826}
+.btn.ghost{background:none}
+.btn.danger{color:var(--loss);border-color:var(--loss-soft)}
+.btn.danger:hover{background:var(--loss-soft)}
+.btn.sm{padding:5px 10px;font-size:12.5px}
+.chip{border:1px solid var(--line);background:#fff;border-radius:999px;padding:6px 13px;font-size:12.5px;cursor:pointer}
+.chip.on{background:var(--ink);color:#fff;border-color:var(--ink)}
+.iconbtn{border:0;background:none;color:var(--faint);cursor:pointer;padding:4px;border-radius:5px;font-size:15px;line-height:1}
+.iconbtn:hover{background:var(--loss-soft);color:var(--loss)}
+.tag{display:inline-block;background:var(--surface-2);border:1px solid var(--line-2);border-radius:5px;padding:1px 8px;font-size:12px;color:var(--muted)}
+
+/* ---- inputs ---- */
+label.fld{display:block;font-size:12px;color:var(--muted);font-weight:550;margin:12px 0 5px}
+input,select,textarea{width:100%;border:1px solid var(--line);border-radius:6px;padding:8px 10px;font-size:13px;font-family:var(--sans);background:#fff;color:var(--ink)}
+.cardcat{width:auto;max-width:110px;padding:5px 6px;font-size:11.5px;border-radius:6px;color:var(--muted)}
+textarea{resize:vertical}
+input:focus,select:focus,textarea:focus{outline:2px solid var(--brass-soft);border-color:var(--brass)}
+.checkline{display:flex;align-items:center;gap:8px;margin:14px 0 6px}
+.checkline input[type=checkbox]{width:auto}
+
+/* ---- library ---- */
+.searchrow{display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap;align-items:center}
+.libheader{position:sticky;top:0;z-index:5;background:var(--paper);padding-top:26px;margin-top:-26px;padding-bottom:2px;margin-bottom:4px}
+.searchrow input{flex:1;min-width:180px}
+.chiprow{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px}
+.promptgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:16px}
+.grouphead{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--brass);font-weight:700;margin:16px 0 8px;padding-top:10px;border-top:1px solid var(--line-2)}
+.pcard{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);box-shadow:var(--shadow);overflow:hidden;display:flex;flex-direction:column}
+.pcard.locked{border-style:dashed;background:var(--surface-2);box-shadow:none}
+.pcard .thumb{width:100%;aspect-ratio:4/3;object-fit:cover;display:block;background:var(--surface-2)}
+.pcard .thumb-empty{width:100%;aspect-ratio:4/3;background:var(--surface-2);display:flex;align-items:center;justify-content:center;color:var(--faint);font-size:12px}
+.pcard .body{padding:12px 13px;flex:1;display:flex;flex-direction:column;gap:8px}
+.pcard.locked .body{align-items:center;text-align:center;justify-content:center}
+.pcard .ptext{font-size:13px;color:var(--ink);line-height:1.4;max-height:4.2em;overflow:hidden;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical}
+.pcard .pcomments{font-size:12px;color:var(--muted);line-height:1.35;max-height:2.7em;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+.pcard .pseed{font-size:11px;color:var(--faint)}
+.pcard .pseed code{font-family:var(--mono);color:var(--muted)}
+.pcard .tagrow{display:flex;flex-wrap:wrap;gap:5px}
+.pcard .foot{display:flex;justify-content:space-between;align-items:center;padding:10px 13px;border-top:1px solid var(--line-2)}
+.empty{text-align:center;padding:46px 20px;color:var(--muted)}
+.rowlabel{font-size:11px;color:var(--faint);font-weight:700;text-transform:uppercase;letter-spacing:.07em}
+.catmgmt{margin-top:6px}
+.rollup{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);box-shadow:var(--shadow);margin-bottom:14px;overflow:hidden}
+.rollup-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:13px 16px;cursor:pointer}
+.rollup-head:hover{background:var(--surface-2)}
+.rollup-head .rtitle{display:flex;align-items:center;gap:9px;font-weight:650;font-size:14.5px}
+.rollup-head .rcount{font-size:12px;color:var(--faint);font-weight:500;margin-left:2px}
+.rollup-chevron{color:var(--faint);transition:transform .15s;flex:none}
+.rollup.open .rollup-chevron{transform:rotate(90deg)}
+.rollup-body{padding:0 16px 16px}
+.rollup-actions{display:flex;gap:2px}
+.drag-handle{color:var(--faint);cursor:grab;display:flex;align-items:center;flex:none}
+.drag-handle:active{cursor:grabbing}
+.drag-handle-spacer{display:inline-block;width:13px;flex:none}
+.rollup.dragging{opacity:.45}
+.rollup.drag-over{outline:2px dashed var(--brass);outline-offset:-2px}
+
+/* ---- lock status (rail) ---- */
+.lockbox{padding:10px 8px;border-top:1px solid rgba(255,255,255,.08);margin-top:10px}
+.lockbox .st{font-size:11.5px;color:var(--faint);margin-bottom:6px}
+.lockbox button{width:100%;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);color:#fff;padding:7px;border-radius:6px;font-size:12.5px;cursor:pointer}
+.lockbox button:hover{background:rgba(255,255,255,.12)}
+
+/* ---- toast / modal ---- */
+.toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(20px);opacity:0;
+  background:var(--ink);color:#fff;padding:11px 18px;border-radius:999px;font-size:13px;box-shadow:var(--shadow);
+  display:flex;align-items:center;gap:9px;z-index:60;pointer-events:none;transition:.18s}
+/* Persistent, dismiss-proof banner for a failed write. Deliberately not a toast:
+   a toast is transient and self-overwriting, which is exactly how a silent data
+   loss went unnoticed before v3.16. Stays up until a save actually succeeds. */
+.savealert{position:fixed;left:0;right:0;top:0;z-index:120;background:var(--loss);color:#fff;
+  padding:10px 18px;font-size:13px;font-weight:600;line-height:1.4;text-align:center;
+  box-shadow:0 2px 12px rgba(22,32,43,.3)}
+.savealert[hidden]{display:none}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+.toast::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--brass-hi)}
+.scrim{position:fixed;inset:0;background:rgba(16,22,30,.45);display:grid;place-items:center;z-index:50;padding:20px;overflow-y:auto}
+.modal{background:var(--surface);border-radius:var(--r-lg);width:min(480px,96vw);box-shadow:0 20px 60px rgba(16,22,30,.3);padding:20px 22px;margin:auto}
+.modal.wide{width:min(600px,96vw)}
+.modal .mh{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
+.modal .mh h3{margin:0;font-size:16px}
+.modal .foot{display:flex;justify-content:flex-end;gap:9px;margin-top:20px}
+.imgprev{max-width:100%;max-height:180px;border-radius:8px;border:1px solid var(--line);margin-top:8px;display:block}
+.lightbox-nav{position:absolute;top:50%;transform:translateY(-50%);background:rgba(22,32,43,.55);color:#fff;border:0;width:38px;height:38px;border-radius:50%;font-size:22px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center}
+.lightbox-nav:hover{background:rgba(22,32,43,.8)}
+.lightbox-nav.left{left:8px}
+.lightbox-nav.right{right:8px}
+
+/* ---- responsive: rail -> horizontal top bar (same markup, CSS transform only) ---- */
+@media(max-width:900px){
+  .app{grid-template-columns:1fr}
+  .rail{position:sticky;top:0;height:auto;overflow-y:visible;flex-direction:row;align-items:center;overflow-x:auto;padding:10px 12px;gap:6px}
+  .brand,.railver,.lockbox{display:none}
+  .nav{flex-direction:row;gap:4px}
+  .nav button{width:auto;white-space:nowrap}
+  .main{padding:18px 16px 50px}
+  .cols-2{grid-template-columns:1fr}
+  .libheader{position:static;margin-top:0;padding-top:0}
+}
+</style>
+</head>
+<body>
+
+<!-- seed / demo data; loaded only when no saved data exists -->
+<script type="application/json" id="seed">
+{
+  "version": 1,
+  "dataVersion": 1,
+  "security": null,
+  "prompts": [
+    {"id":"p1","createdAt":"2026-09-01T00:00:00.000Z","updatedAt":"2026-09-01T00:00:00.000Z",
+     "nsfw": false,
+     "promptText":"A weathered lighthouse at dusk, cinematic lighting, volumetric fog, ultra-detailed, wide shot",
+     "negativePrompt": "",
+     "tags":["landscape","demo"],
+     "comments":"Demo entry — feel free to edit or delete this.",
+     "seed": "",
+     "width": 640,
+     "height": 369,
+     "image": {"data":"data:image/jpeg;base64,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","w":640,"h":369},
+     "categoryId": "lc1"}
+  ],
+  "libCategories": [
+    {"id":"lc1","name":"Landscapes"}
+  ],
+  "expandedCategories": {}
+}
+</script>
+
+
+<div class="app">
+  <aside class="rail">
+    <div class="brand"><svg class="seal" role="img" aria-label="Smaller Hammer logo" viewBox="0 0 1075.454968 1176.557847" xmlns="http://www.w3.org/2000/svg"><path transform="translate(-87.806878,1221.697957) scale(0.100000,-0.100000)" d="M6956 12209 c-102 -24 -281 -133 -453 -276 -126 -104 -325 -308 -433 -443 -268 -335 -471 -748 -542 -1100 -31 -157 -32 -451 -1 -610 11 -58 20 -106 18 -108 -1 -1 -42 9 -91 23 -49 15 -133 31 -186 37 -75 9 -95 14 -88 24 24 28 60 141 60 186 0 83 -55 115 -180 106 -80 -6 -187 -60 -276 -140 -39 -36 -61 -51 -52 -36 72 112 111 188 116 225 4 37 1 46 -25 72 -42 42 -99 48 -202 22 -153 -38 -319 -145 -416 -269 -52 -65 -121 -196 -131 -247 -3 -19 -8 -35 -10 -35 -2 0 -32 23 -66 50 -87 70 -262 155 -383 187 -141 36 -318 36 -457 0 -322 -84 -641 -305 -998 -689 -507 -546 -1063 -1414 -1214 -1895 -85 -271 -91 -517 -16 -664 134 -262 609 -223 1070 86 446 300 746 690 1123 1460 174 356 188 384 184 360 -17 -81 -145 -513 -181 -610 -140 -381 -294 -640 -558 -938 -109 -124 -127 -170 -109 -279 12 -76 56 -182 97 -235 14 -19 24 -35 23 -37 -2 -1 -31 -10 -64 -20 -247 -75 -558 -273 -790 -502 -191 -189 -332 -384 -441 -609 -187 -387 -225 -726 -102 -909 13 -18 36 -51 51 -73 l28 -41 -17 -83 c-31 -153 10 -328 97 -417 61 -62 115 -86 194 -87 61 0 72 -3 88 -23 11 -12 42 -35 70 -50 46 -24 63 -27 147 -27 88 0 101 3 162 33 37 18 80 49 96 68 26 32 34 35 73 32 l43 -3 -58 -62 c-42 -46 -79 -73 -134 -100 -73 -36 -80 -38 -176 -38 -91 0 -107 3 -161 29 -50 25 -70 29 -122 27 -104 -5 -166 20 -246 101 -37 37 -74 68 -82 68 -39 0 -103 -139 -140 -309 -88 -392 -50 -752 116 -1084 72 -144 140 -238 264 -362 120 -121 234 -203 382 -275 50 -25 92 -48 92 -51 1 -4 -18 -9 -41 -13 -66 -11 -238 -71 -320 -112 -177 -89 -310 -210 -374 -339 -34 -68 -39 -90 -42 -160 -3 -67 0 -89 16 -121 63 -121 237 -195 467 -198 109 -1 123 -3 149 -23 61 -49 230 -68 516 -60 361 11 666 56 907 135 337 111 623 326 623 469 0 46 -18 90 -44 112 -32 27 -14 28 87 5 383 -87 879 -90 1297 -8 69 13 129 24 134 24 4 0 -6 -16 -22 -35 -35 -39 -48 -87 -38 -140 10 -51 119 -163 236 -240 304 -203 670 -307 1125 -322 271 -8 432 15 469 68 12 18 19 19 85 8 136 -21 339 26 437 100 26 20 58 56 71 81 22 40 24 56 21 135 -2 76 -8 100 -34 155 -98 206 -357 379 -694 463 l-55 13 110 57 c155 80 283 174 405 297 285 287 445 640 522 1150 20 132 17 545 -5 700 -71 494 -209 908 -412 1243 -19 31 -32 57 -29 57 3 0 25 -17 49 -38 137 -121 403 -99 522 44 31 36 42 43 87 49 145 19 284 140 337 292 11 32 23 93 26 135 l6 78 326 129 c441 174 470 185 476 179 3 -2 36 -98 75 -211 38 -114 77 -218 85 -231 33 -49 71 -51 208 -12 197 56 469 154 494 178 13 12 28 39 33 59 12 43 -12 123 -227 754 -58 171 -117 346 -130 390 -29 92 -73 145 -121 145 -77 0 -365 -96 -554 -184 -130 -61 -138 -90 -74 -267 55 -152 63 -184 44 -192 -148 -59 -761 -313 -782 -324 -28 -14 -30 -14 -75 30 -192 186 -620 351 -993 383 -43 3 -78 8 -78 10 0 2 18 27 41 56 55 73 154 276 181 373 29 109 32 327 4 430 -23 89 -81 214 -137 296 -59 87 -221 252 -295 301 l-60 40 -54 136 c-147 379 -303 643 -502 847 l-88 92 61 11 c72 13 110 43 289 222 510 510 742 1080 716 1755 -13 357 -93 752 -191 946 -63 124 -141 165 -259 138z M10745 6691 c-11 -5 -28 -17 -37 -27 -9 -11 -66 -145 -127 -299 -60 -154 -119 -302 -130 -328 -32 -74 -26 -106 18 -92 28 9 421 632 421 667 0 62 -80 105 -145 79z M11195 6318 c-45 -25 -588 -454 -602 -475 -17 -26 -10 -43 18 -43 43 0 679 337 704 373 33 47 12 113 -45 142 -34 18 -48 18 -75 3z M10985 5690 c-343 -35 -359 -38 -363 -67 -2 -14 3 -23 15 -27 19 -6 321 -37 550 -57 78 -6 153 -9 167 -5 67 17 91 112 41 161 -31 32 -46 31 -410 -5z M9890 5570 c-97 -12 -150 -29 -176 -55 -23 -23 -24 -30 -24 -172 0 -146 -1 -148 -19 -124 l-19 24 -43 -26 c-72 -42 -174 -132 -245 -214 -315 -369 -497 -920 -497 -1503 0 -373 73 -691 229 -989 136 -262 353 -498 587 -640 101 -62 101 -62 137 9 17 34 33 60 35 58 2 -2 -20 -77 -50 -166 l-53 -162 -3 -532 c-2 -374 0 -539 8 -553 6 -11 23 -31 38 -45 26 -25 30 -25 213 -28 212 -3 233 2 266 73 17 34 17 63 6 453 -18 632 -17 627 -79 825 -29 93 -51 170 -48 173 2 3 26 -31 51 -75 56 -98 61 -99 183 -35 145 75 274 182 395 323 273 322 413 675 449 1134 28 363 -38 796 -172 1134 -86 217 -227 447 -362 589 -83 88 -199 184 -223 184 -7 0 -20 -10 -28 -22 -15 -21 -16 -11 -16 130 0 147 -1 154 -23 176 -35 35 -148 57 -312 61 -77 2 -169 0 -205 -5z M8781 2106 c-180 -84 -311 -151 -322 -165 -18 -22 -19 -52 -19 -692 l0 -668 22 -15 c12 -9 30 -16 39 -16 19 0 1106 537 1114 550 7 11 43 357 52 495 l6 100 -89 71 c-110 88 -255 238 -364 378 -69 87 -88 106 -109 105 -14 0 -163 -64 -330 -143z M10909 2168 c-122 -157 -342 -363 -489 -459 -18 -12 -24 -25 -24 -50 1 -19 4 -150 8 -292 7 -217 11 -261 25 -276 9 -11 108 -63 221 -117 113 -53 360 -170 549 -260 189 -90 356 -164 371 -164 15 0 35 9 46 21 17 19 18 48 15 687 -1 392 -6 673 -12 684 -11 21 -592 308 -623 308 -16 0 -41 -24 -87 -82z" fill="var(--brass-hi)" fill-rule="evenodd"/></svg><div><b>Prompt Vault</b><small>A Smaller Hammer App</small></div></div>
+    <nav class="nav" id="nav"></nav>
+    <div id="lockbox"></div>
+    <div class="railver" id="railver"></div>
+  </aside>
+  <main class="main" id="main"></main>
+</div>
+
+<div id="savealert" class="savealert" hidden></div>
+<div id="toast" class="toast"></div>
+<div id="modalRoot"></div>
+
+<script>
+/* ============================ constants ============================ */
+const APP_VERSION='4.2', APP_BUILD='2026-09-13';
+const LS_KEY='inkbrass.promptvault.v1';
+const SEED=JSON.parse(document.getElementById('seed').textContent);
+const MAX_IMG_DIM=640;     // longest edge, px — reference thumbnail, not a full-res copy
+const IMG_QUALITY=0.82;    // JPEG quality 0-1
+const PBKDF2_ITERATIONS=150000;
+const PIN_MAGIC='PROMPTVAULT-PIN-OK-v1';
+const IDB_NAME='inkbrass.promptvault.images', IDB_STORE='images', IDB_VERSION=1;
+const BACKUP_VERSION=2;   // 2 = images in a top-level `images` map; 1 = images inline on each prompt
+const $=(s,el=document)=>el.querySelector(s);
+
+/* ============================ state ============================ */
+let db=loadDB();
+let view='library';
+let state={search:'', tagFilters:[]};
+let sessionKey=null;        // CryptoKey — present only while unlocked this session
+let decryptedCache={};      // promptId -> {promptText,tags,comments,image}
+let imageCache={};          // promptId -> {data,w,h} for UNPROTECTED prompts, loaded from IndexedDB at boot
+let idb=null;               // IndexedDB handle for the image store; null = unavailable
+let storageAlert=null;      // text of the persistent 'not saved' banner, or null
+let modalState={id:null, image:null, nsfw:false};
+let lightboxState={ids:[], index:0};
+let pinAfterFn=null;
+let pendingEncryptedImport=null;   // wrapper object awaiting a PIN during an encrypted-backup import
+
+function loadDB(){
+  try{
+    const raw=localStorage.getItem(LS_KEY);
+    if(raw){ const d=JSON.parse(raw); if(!Array.isArray(d.prompts)) d.prompts=[]; if(d.security===undefined) d.security=null; if(!Array.isArray(d.libCategories)) d.libCategories=[]; d.prompts.forEach(p=>{ if(p.categoryId===undefined) p.categoryId=null; }); if(!d.expandedCategories || typeof d.expandedCategories!=='object') d.expandedCategories={}; delete d.images; delete d.backupVersion; return d; }
+  }catch(e){}
+  return structuredClone(SEED);
+}
+/* saveDB MUST report whether the write actually happened. A toast is not enough:
+   toast() overwrites itself, so a failure raised here used to be wiped out by the
+   very next success message and the app would claim to have saved when it hadn't.
+   Callers that announce success must check the return value; the banner is the
+   catch-all for the many callers that don't. */
+function saveDB(){
+  try{
+    localStorage.setItem(LS_KEY, JSON.stringify(db));
+    setStorageAlert(null);
+    return true;
+  }catch(e){
+    setStorageAlert('NOT SAVED — '+((e&&e.name)||'storage error')+'. Your changes exist only in this tab and will be lost when it closes. Export a backup now.');
+    return false;
+  }
+}
+function setStorageAlert(msg){
+  storageAlert=msg||null;
+  const el=document.getElementById('savealert');
+  if(!el) return;
+  if(storageAlert){ el.textContent=storageAlert; el.hidden=false; }
+  else { el.textContent=''; el.hidden=true; }
+}
+
+/* ============================ helpers ============================ */
+function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+function todayStr(){ const d=new Date(),p=n=>String(n).padStart(2,'0'); return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate()); }
+function uid(){ return 'p'+Date.now().toString(36)+Math.random().toString(36).slice(2,6); }
+let toastT;
+function toast(msg){ const t=$('#toast'); t.textContent=msg; t.classList.add('show'); clearTimeout(toastT); toastT=setTimeout(()=>t.classList.remove('show'),2500); }
+
+/* ============================ crypto (AES-GCM, key from PIN via PBKDF2) ============================ */
+function buf2b64(buf){
+  const bytes=new Uint8Array(buf); let bin=''; const chunk=0x8000;
+  for(let i=0;i<bytes.length;i+=chunk) bin+=String.fromCharCode.apply(null, bytes.subarray(i,i+chunk));
+  return btoa(bin);
+}
+function b642buf(b64){ const bin=atob(b64); const arr=new Uint8Array(bin.length); for(let i=0;i<bin.length;i++) arr[i]=bin.charCodeAt(i); return arr.buffer; }
+async function deriveKey(pin, saltB64, iterations){
+  const km=await crypto.subtle.importKey('raw', new TextEncoder().encode(pin), {name:'PBKDF2'}, false, ['deriveKey']);
+  const salt=new Uint8Array(b642buf(saltB64));
+  return crypto.subtle.deriveKey({name:'PBKDF2', salt, iterations, hash:'SHA-256'}, km, {name:'AES-GCM', length:256}, false, ['encrypt','decrypt']);
+}
+async function encryptJSON(obj, key){
+  const iv=crypto.getRandomValues(new Uint8Array(12));
+  const data=new TextEncoder().encode(JSON.stringify(obj));
+  const ct=await crypto.subtle.encrypt({name:'AES-GCM', iv}, key, data);
+  return {iv:buf2b64(iv), ct:buf2b64(ct)};
+}
+async function decryptJSON(enc, key){
+  const iv=new Uint8Array(b642buf(enc.iv));
+  const plain=await crypto.subtle.decrypt({name:'AES-GCM', iv}, key, b642buf(enc.ct));
+  return JSON.parse(new TextDecoder().decode(plain));
+}
+async function setupPin(pin){
+  const saltB64=buf2b64(crypto.getRandomValues(new Uint8Array(16)).buffer);
+  const key=await deriveKey(pin, saltB64, PBKDF2_ITERATIONS);
+  const verifier=await encryptJSON({m:PIN_MAGIC}, key);
+  db.security={salt:saltB64, iterations:PBKDF2_ITERATIONS, verifier};
+  saveDB();
+  sessionKey=key; decryptedCache={};
+}
+async function tryUnlock(pin){
+  if(!db.security) return false;
+  try{
+    const key=await deriveKey(pin, db.security.salt, db.security.iterations);
+    const check=await decryptJSON(db.security.verifier, key);
+    if(check.m!==PIN_MAGIC) return false;
+    sessionKey=key; decryptedCache={};
+    let migrated=0;
+    for(const p of db.prompts){
+      if(!(p.nsfw && p.enc)) continue;
+      let c; try{ c=await decryptJSON(p.enc, key); }catch(e){ continue; }
+      if(c.image && c.image.data){
+        // legacy (v3.15 and earlier): the image was encrypted inside `enc`. Move it to
+        // the image store under its own ciphertext, then re-encrypt `enc` without it.
+        const blob=await encryptJSON({data:c.image.data, w:c.image.w, h:c.image.h}, key);
+        if(await idbPut(p.id, {enc:true, blob})){
+          const rest=Object.assign({}, c); delete rest.image;
+          p.enc=await encryptJSON(rest, key);
+          migrated++;
+        }
+      } else {
+        const rec=await idbGet(p.id);
+        c.image=null;
+        if(rec && rec.enc && rec.blob){ try{ c.image=await decryptJSON(rec.blob, key); }catch(e){ c.image=null; } }
+      }
+      decryptedCache[p.id]=c;
+    }
+    if(migrated) saveDB();
+    return true;
+  }catch(e){ return false; }
+}
+async function changePin(newPin){
+  const saltB64=buf2b64(crypto.getRandomValues(new Uint8Array(16)).buffer);
+  const newKey=await deriveKey(newPin, saltB64, PBKDF2_ITERATIONS);
+  for(const p of db.prompts){
+    if(!p.nsfw) continue;
+    const c=decryptedCache[p.id]; if(!c) continue;
+    const rest=Object.assign({}, c); delete rest.image;
+    p.enc=await encryptJSON(rest, newKey);
+    // the image sits in its own ciphertext in the image store — it needs rekeying as well
+    if(c.image && c.image.data){
+      await idbPut(p.id, {enc:true, blob:await encryptJSON({data:c.image.data, w:c.image.w, h:c.image.h}, newKey)});
+    }
+  }
+  db.security={salt:saltB64, iterations:PBKDF2_ITERATIONS, verifier:await encryptJSON({m:PIN_MAGIC}, newKey)};
+  sessionKey=newKey; saveDB();
+}
+function lockNow(){ sessionKey=null; decryptedCache={}; render(); toast('Locked'); }
+
+/* ============================ image handling ============================ */
+// Resizes/re-encodes an uploaded image client-side before it ever touches storage:
+// long edge capped at MAX_IMG_DIM, re-encoded as JPEG at IMG_QUALITY. This is a
+// visual cue for the stored prompt, not an archival copy of the original file.
+function resizeImageFile(file, cb){
+  const reader=new FileReader();
+  reader.onload=()=>{
+    const img=new Image();
+    img.onload=()=>{
+      let w=img.width, h=img.height;
+      if(w>MAX_IMG_DIM || h>MAX_IMG_DIM){
+        if(w>=h){ h=Math.round(h*MAX_IMG_DIM/w); w=MAX_IMG_DIM; } else { w=Math.round(w*MAX_IMG_DIM/h); h=MAX_IMG_DIM; }
+      }
+      const canvas=document.createElement('canvas'); canvas.width=w; canvas.height=h;
+      canvas.getContext('2d').drawImage(img,0,0,w,h);
+      cb({data:canvas.toDataURL('image/jpeg', IMG_QUALITY), w, h});
+    };
+    img.onerror=()=>toast('Could not read that image');
+    img.src=reader.result;
+  };
+  reader.readAsDataURL(file);
+}
+
+/* ============================ image store (IndexedDB) ============================
+   Reference images live in IndexedDB, NOT in localStorage. localStorage is capped at
+   roughly 5MB per origin, and in Chrome every file:// page shares ONE origin — so a
+   few hundred base64 thumbnails in here silently starve every other Ink & Brass tool
+   as well as this one. IndexedDB on the same origin reports a quota in gigabytes.
+
+   Record shape, keyed by prompt id:
+     unprotected: {enc:false, data:<jpeg dataURL>, w, h}
+     protected:   {enc:true,  blob:{iv,ct}}          // AES-GCM of {data,w,h}, PIN key
+
+   A prompt record in localStorage no longer carries `image` at all. In memory,
+   unprotected images sit in imageCache (loaded at boot) and protected ones in
+   decryptedCache[id].image (populated at unlock), so cardHTML() stays synchronous.
+
+   Storage is best-effort: navigator.storage.persist() is refused for file:// origins,
+   so IndexedDB can in principle be evicted under real disk pressure while the
+   localStorage metadata survives. imageFor() therefore returns null rather than
+   throwing, and every render path treats a missing image as 'no image'. */
+function openImageDB(){
+  return new Promise(resolve=>{
+    try{
+      const req=indexedDB.open(IDB_NAME, IDB_VERSION);
+      req.onupgradeneeded=()=>{ const d=req.result; if(!d.objectStoreNames.contains(IDB_STORE)) d.createObjectStore(IDB_STORE); };
+      req.onsuccess=()=>resolve(req.result);
+      req.onerror=()=>resolve(null);
+    }catch(e){ resolve(null); }
+  });
+}
+function idbStore(mode){ if(!idb) return null; try{ return idb.transaction(IDB_STORE, mode).objectStore(IDB_STORE); }catch(e){ return null; } }
+function idbGet(id){ return new Promise(res=>{ const st=idbStore('readonly'); if(!st) return res(null); const r=st.get(id); r.onsuccess=()=>res(r.result||null); r.onerror=()=>res(null); }); }
+function idbPut(id, rec){ return new Promise(res=>{
+  const st=idbStore('readwrite');
+  if(!st){ setStorageAlert('Image store unavailable — reference images are not being saved.'); return res(false); }
+  const r=st.put(rec, id);
+  r.onsuccess=()=>res(true);
+  r.onerror=()=>{ setStorageAlert('Image NOT saved — '+((r.error&&r.error.name)||'storage error')+'. Export a backup now.'); res(false); };
+}); }
+function idbDelete(id){ return new Promise(res=>{ const st=idbStore('readwrite'); if(!st) return res(false); const r=st.delete(id); r.onsuccess=()=>res(true); r.onerror=()=>res(false); }); }
+function idbClear(){ return new Promise(res=>{ const st=idbStore('readwrite'); if(!st) return res(false); const r=st.clear(); r.onsuccess=()=>res(true); r.onerror=()=>res(false); }); }
+function idbEntries(){ return new Promise(res=>{ const st=idbStore('readonly'); if(!st) return res({}); const out={}; const r=st.openCursor(); r.onsuccess=()=>{ const c=r.result; if(!c) return res(out); out[c.key]=c.value; c.continue(); }; r.onerror=()=>res(out); }); }
+
+// The single accessor every render path uses. Never throws, never assumes presence.
+function imageFor(p){
+  if(!p) return null;
+  if(p.nsfw){ const c=decryptedCache[p.id]; return (c&&c.image)||null; }
+  return imageCache[p.id]||null;
+}
+async function loadImageCache(){
+  imageCache={};
+  const all=await idbEntries();
+  for(const id in all){ const rec=all[id]; if(rec && !rec.enc && rec.data) imageCache[id]={data:rec.data, w:rec.w, h:rec.h}; }
+}
+/* v3.15-and-earlier data kept unprotected images inline on the prompt record. Move
+   them out on first boot. If a write fails the inline copy is left exactly where it
+   is — never drop the only copy of something that could not be rewritten. Protected
+   prompts' images are inside `enc` and can only be migrated at unlock (see tryUnlock). */
+async function migrateInlineImages(){
+  let moved=0;
+  for(const p of db.prompts){
+    if(p.nsfw || !p.image || !p.image.data) continue;
+    if(!await idbPut(p.id, {enc:false, data:p.image.data, w:p.image.w, h:p.image.h})) return false;
+    delete p.image; moved++;
+  }
+  if(moved) saveDB();
+  return true;
+}
+
+/* ============================ navigation ============================ */
+const NAV=[
+  ['library','Library','M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z'],
+  ['data','Data &amp; Security','M6 10V7a6 6 0 1112 0v3M5 10h14v10H5z']
+];
+function icon(d){return `<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="${d}"/></svg>`;}
+function go(v){ view=v; render(); window.scrollTo(0,0); }
+
+/* ============================ render router ============================ */
+function render(){
+  renderNav();
+  $('#main').innerHTML = view==='library' ? viewLibrary() : viewData();
+  if(view==='data') refreshStoredNow();   // async: image-store figures come from IndexedDB
+}
+function renderNav(){
+  $('#nav').innerHTML=NAV.map(([id,label,d])=>`<button class="${id===view?'on':''}" onclick="go('${id}')">${icon(d)}<span>${label}</span></button>`).join('');
+  $('#railver').innerHTML=`<b>v${APP_VERSION}</b> · ${APP_BUILD}`;
+  renderLockbox();
+}
+function renderLockbox(){
+  const el=$('#lockbox'); if(!el) return;
+  if(!db.security){ el.innerHTML=''; return; }
+  el.innerHTML=`<div class="lockbox"><div class="st">${sessionKey?'🔓 Unlocked':'🔒 Locked'}</div>
+    <button onclick="${sessionKey?'lockNow()':'openPinUnlockModal()'}">${sessionKey?'Lock now':'Unlock'}</button></div>`;
+}
+
+/* ---------- Library ---------- */
+function allTags(){
+  const set=new Set();
+  for(const p of db.prompts){ const c=p.nsfw?decryptedCache[p.id]:p; if(c) (c.tags||[]).forEach(t=>set.add(t)); }
+  return [...set].sort((a,b)=>a.localeCompare(b));
+}
+function visibleList(){
+  const q=(state.search||'').trim().toLowerCase();
+  const tagFilters=state.tagFilters;
+  return db.prompts.filter(p=>{
+    const c=p.nsfw?decryptedCache[p.id]:p;
+    if(p.nsfw && !c) return !q && !tagFilters.length; // locked cards only show in the unfiltered view
+    if(tagFilters.length && !tagFilters.every(t=>(c.tags||[]).includes(t))) return false;
+    if(q){
+      const hay=((c.promptText||'')+' '+(c.negativePrompt||'')+' '+(c.seed||'')+' '+(c.comments||'')+' '+(c.tags||[]).join(' ')).toLowerCase();
+      if(!hay.includes(q)) return false;
+    }
+    return true;
+  }).sort((a,b)=>(b.updatedAt||'').localeCompare(a.updatedAt||''));
+}
+function libCountText(){
+  const nsfwCount=db.prompts.filter(p=>p.nsfw).length;
+  return `${db.prompts.length} prompt${db.prompts.length===1?'':'s'} saved${nsfwCount?` · ${nsfwCount} marked Protected`:''}`;
+}
+// Tag chips are cumulative: each click adds (or removes) that tag as an extra AND
+// condition alongside the search box and any other selected chips, rather than
+// swapping which single tag is active.
+function chipsHTML(){
+  const tagFilters=state.tagFilters;
+  const tags=allTags();
+  return ['<button class="chip '+(!tagFilters.length?'on':'')+'" onclick="clearTagFilters()">All</button>']
+    .concat(tags.map(t=>`<button class="chip ${tagFilters.includes(t)?'on':''}" onclick="toggleTagFilter('${esc(t)}')">${esc(t)}</button>`)).join('');
+}
+function rollupPreviewHTML(prompts){
+  const imgs=prompts.map(p=>{ const im=imageFor(p); return im?im.data:null; }).filter(Boolean).slice(0,4);
+  if(!imgs.length) return '';
+  return `<div style="display:flex;gap:4px">${imgs.map(src=>`<img src="${src}" style="width:26px;height:26px;object-fit:cover;border-radius:5px;border:1px solid var(--line)">`).join('')}</div>`;
+}
+const GRIP_ICON=`<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><circle cx="8" cy="6" r="1.7"/><circle cx="16" cy="6" r="1.7"/><circle cx="8" cy="12" r="1.7"/><circle cx="16" cy="12" r="1.7"/><circle cx="8" cy="18" r="1.7"/><circle cx="16" cy="18" r="1.7"/></svg>`;
+let dragCatId=null;
+// Native HTML5 drag/drop: only the grip handle is draggable (not the whole card,
+// so clicking the header still just expands/collapses), and only real categories
+// take part — Uncategorized always sits last and isn't reorderable. The order lives
+// in db.libCategories itself, so it round-trips through both backup types for free —
+// no separate "position" field needed, since JSON preserves array order.
+function onRollupDragStart(e, catId){
+  dragCatId=catId;
+  e.dataTransfer.effectAllowed='move';
+  e.dataTransfer.setData('text/plain', catId);
+  const el=e.target.closest('.rollup'); if(el) el.classList.add('dragging');
+}
+function onRollupDragEnd(){
+  document.querySelectorAll('.rollup.dragging').forEach(el=>el.classList.remove('dragging'));
+  document.querySelectorAll('.rollup.drag-over').forEach(el=>el.classList.remove('drag-over'));
+  dragCatId=null;
+}
+function onRollupDrop(e, targetCatId){
+  e.preventDefault();
+  const sourceCatId=dragCatId || e.dataTransfer.getData('text/plain');
+  if(!sourceCatId || sourceCatId===targetCatId) return;
+  const fromIdx=db.libCategories.findIndex(c=>c.id===sourceCatId);
+  let toIdx=db.libCategories.findIndex(c=>c.id===targetCatId);
+  if(fromIdx<0 || toIdx<0) return;
+  const [moved]=db.libCategories.splice(fromIdx,1);
+  if(fromIdx<toIdx) toIdx--; // target shifted left after the source was removed
+  db.libCategories.splice(toIdx,0,moved);
+  saveDB(); render();
+}
+function rollupCardHTML(key, name, prompts, filtering, isUncat){
+  const expanded=filtering ? true : (db.expandedCategories[key]===true);
+  const preview=expanded ? '' : rollupPreviewHTML(prompts);
+  const dragAttrs=!isUncat?`ondragover="event.preventDefault(); this.classList.add('drag-over')" ondragleave="this.classList.remove('drag-over')" ondrop="this.classList.remove('drag-over'); onRollupDrop(event,'${key}')"`:'';
+  const handle=!isUncat?`<span class="drag-handle" draggable="true" onclick="event.stopPropagation()" ondragstart="onRollupDragStart(event,'${key}')" ondragend="onRollupDragEnd()" title="Drag to reorder">${GRIP_ICON}</span>`:`<span class="drag-handle-spacer"></span>`;
+  return `<div id="rollup-${key}" class="rollup ${expanded?'open':''}" ${dragAttrs}>
+    <div class="rollup-head" onclick="toggleCategoryRollup('${key}')">
+      <div class="rtitle">${handle}<svg class="rollup-chevron" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>${esc(name)}<span class="rcount">· ${prompts.length} prompt${prompts.length===1?'':'s'}</span></div>
+      <div style="display:flex;align-items:center;gap:10px">
+        ${preview}
+        ${!isUncat?`<div class="rollup-actions" onclick="event.stopPropagation()">
+          <button class="iconbtn" title="Rename" onclick="renameLibCategory('${key}')" style="color:var(--faint)">✎</button>
+          <button class="iconbtn" title="Delete category" onclick="deleteLibCategoryConfirm('${key}')">✕</button>
+        </div>`:''}
+      </div>
+    </div>
+    ${expanded?`<div class="rollup-body"><div class="promptgrid">${prompts.length?prompts.map(cardHTML).join(''):'<div class="empty" style="padding:20px 0">No prompts here yet.</div>'}</div></div>`:''}
+  </div>`;
+}
+// Category rollups are built from the same filtered/sorted list the old flat grid used —
+// filtering (search or a tag chip) forces every category with a hit open and hides the
+// rest, so browsing a category never requires a second, separate search mechanism.
+function rollupsHTML(){
+  const list=visibleList();
+  const filtering=!!(state.search && state.search.trim()) || state.tagFilters.length>0;
+  const byCat={};
+  for(const p of list){ const key=p.categoryId||'__uncat__'; (byCat[key]=byCat[key]||[]).push(p); }
+  let html='';
+  for(const cat of db.libCategories){
+    const prompts=byCat[cat.id]||[];
+    if(filtering && !prompts.length) continue;
+    html+=rollupCardHTML(cat.id, cat.name, prompts, filtering, false);
+  }
+  const uncat=byCat['__uncat__']||[];
+  if(!filtering || uncat.length) html+=rollupCardHTML('__uncat__', 'Uncategorized', uncat, filtering, true);
+  return html || `<div class="empty">No prompts match. Try clearing filters, or add a new one.</div>`;
+}
+function toggleCategoryRollup(key){
+  db.expandedCategories[key]=!(db.expandedCategories[key]===true);
+  saveDB();
+  refreshLibrary();
+}
+// Used by the category chips (in the sticky header) to open + scroll to a rollup.
+// Height is measured live rather than hard-coded, since the sticky header's own
+// height changes as tag/category chips wrap onto more or fewer lines.
+function jumpToCategoryRollup(key){
+  const nowExpanded=!(db.expandedCategories[key]===true);
+  db.expandedCategories[key]=nowExpanded;
+  saveDB();
+  refreshLibrary();
+  if(nowExpanded){
+    requestAnimationFrame(()=>{
+      const el=document.getElementById('rollup-'+key);
+      if(!el) return;
+      const header=document.querySelector('.libheader');
+      const headerH=header ? header.getBoundingClientRect().height : 0;
+      const y=el.getBoundingClientRect().top + window.scrollY - headerH - 12;
+      window.scrollTo({top:Math.max(0,y), behavior:'smooth'});
+    });
+  }
+}
+function collapseAllCategories(){
+  for(const cat of db.libCategories) db.expandedCategories[cat.id]=false;
+  db.expandedCategories['__uncat__']=false;
+  saveDB();
+  refreshLibrary();
+  toast('All categories collapsed');
+}
+function addLibCategory(){
+  const input=$('#newLibCatName'); const name=(input.value||'').trim();
+  if(!name) return toast('Enter a category name');
+  if(db.libCategories.some(c=>c.name.toLowerCase()===name.toLowerCase())) return toast('That category already exists');
+  db.libCategories.push({id:uid(), name});
+  saveDB(); render();
+}
+function renameLibCategory(id){
+  const c=db.libCategories.find(x=>x.id===id); if(!c) return;
+  const name=window.prompt('Rename category', c.name);
+  if(name===null) return;
+  const trimmed=name.trim(); if(!trimmed) return;
+  c.name=trimmed; saveDB(); render();
+}
+function deleteLibCategoryConfirm(id){
+  if(!confirm('Delete this category? Prompts inside it move to Uncategorized — nothing about the prompts themselves changes.')) return;
+  db.libCategories=db.libCategories.filter(c=>c.id!==id);
+  for(const p of db.prompts){ if(p.categoryId===id) p.categoryId=null; }
+  delete db.expandedCategories[id];
+  saveDB(); render();
+}
+function libCategoryChipsHTML(){
+  if(!db.libCategories.length) return `<span class="sub" style="margin:0">No categories yet — add one above.</span>`;
+  const chips=db.libCategories.map(c=>`<span class="chip" style="display:inline-flex;align-items:center;gap:6px"><a href="javascript:void(0)" onclick="jumpToCategoryRollup('${c.id}')" style="color:inherit;text-decoration:none" title="Jump to this category">${esc(c.name)}</a><a href="javascript:void(0)" onclick="renameLibCategory('${c.id}')" style="color:var(--muted);text-decoration:none" title="Rename">✎</a><a href="javascript:void(0)" onclick="deleteLibCategoryConfirm('${c.id}')" style="color:var(--loss);text-decoration:none" title="Delete">✕</a></span>`).join('');
+  return chips+`<button class="btn sm ghost" onclick="collapseAllCategories()">Roll up all</button>`;
+}
+function cardCategorySelectHTML(p){
+  return `<select class="cardcat" title="Category" onchange="onCardCategoryChange('${p.id}', this.value)">
+    <option value="">Uncategorized</option>
+    ${db.libCategories.map(c=>`<option value="${esc(c.id)}" ${p.categoryId===c.id?'selected':''}>${esc(c.name)}</option>`).join('')}
+  </select>`;
+}
+function onCardCategoryChange(id, value){
+  const p=db.prompts.find(x=>x.id===id); if(!p) return;
+  p.categoryId=value||null;
+  const catName=value ? ((db.libCategories.find(c=>c.id===value)||{}).name) : 'Uncategorized';
+  saveDB(); render();
+  toast(`Moved to ${catName||'Uncategorized'}`);
+}
+function gcd(a,b){ return b===0 ? a : gcd(b, a%b); }
+function aspectRatioLabel(w,h){
+  if(!w || !h) return '';
+  const g=gcd(w,h)||1;
+  return `${w/g}:${h/g}`;
+}
+function updateWHRatio(){
+  const el=$('#wh_ratio'); if(!el) return;
+  const w=parseInt($('#f_width').value,10), h=parseInt($('#f_height').value,10);
+  const r=aspectRatioLabel(w,h);
+  el.textContent=r ? `Ratio: ${r}` : '';
+}
+function cardHTML(p){
+  if(p.nsfw && !decryptedCache[p.id]){
+    return `<div class="pcard locked">
+      <div class="thumb-empty">🔒</div>
+      <div class="body">
+        <div style="font-size:13px;font-weight:600">Locked protected prompt</div>
+        <div class="sub" style="margin:0">Unlock to view</div>
+      </div>
+      <div class="foot">
+        <div style="display:flex;gap:6px;align-items:center">
+          <button class="btn sm brass" onclick="openPinUnlockModal()">Unlock</button>
+          ${cardCategorySelectHTML(p)}
+        </div>
+        <button class="iconbtn" title="Delete" onclick="deletePromptConfirm('${p.id}')">✕</button>
+      </div>
+    </div>`;
+  }
+  const c=p.nsfw?decryptedCache[p.id]:p;
+  const im=imageFor(p);
+  const img=im ? `<img class="thumb" src="${im.data}" style="cursor:zoom-in" title="Click to view full size" onclick="openImageLightbox('${p.id}')">` : `<div class="thumb-empty">no image</div>`;
+  const tagChips=(c.tags||[]).map(t=>`<span class="tag">${esc(t)}</span>`).join('');
+  const comments=(c.comments||'').trim();
+  const seed=(c.seed||'').trim();
+  const ratio=aspectRatioLabel(c.width, c.height);
+  return `<div class="pcard">
+    ${img}
+    <div class="body">
+      ${p.nsfw?'<span class="pill nsfw">Protected</span>':''}
+      <div class="ptext">${esc(c.promptText)}</div>
+      ${comments?`<div class="pcomments">📝 ${esc(comments)}</div>`:''}
+      ${seed?`<div class="pseed">Seed: <code>${esc(seed)}</code></div>`:''}
+      ${ratio?`<div class="pseed">Size: <code>${c.width}×${c.height}</code> · <code>${ratio}</code></div>`:''}
+      <div class="tagrow">${tagChips}</div>
+    </div>
+    <div class="foot">
+      <div style="display:flex;gap:6px;align-items:center">
+        <button class="btn sm brass" onclick="copyPrompt('${p.id}')">Copy</button>
+        ${cardCategorySelectHTML(p)}
+      </div>
+      <div style="display:flex;gap:6px">
+        <button class="btn sm ghost" onclick="openPromptModal('${p.id}')">Edit</button>
+        <button class="iconbtn" title="Delete" onclick="deletePromptConfirm('${p.id}')">✕</button>
+      </div>
+    </div>
+  </div>`;
+}
+function viewLibrary(){
+  return `
+  <div class="libheader">
+    <div class="pagehead">
+      <div><div class="eyebrow">Prompt Vault · Library</div><h1>Library</h1>
+        <div class="sub" id="libcount">${libCountText()}</div></div>
+      <div style="display:flex;gap:8px">
+        <button class="btn ghost" onclick="collapseAllCategories()">Collapse all</button>
+        <button class="btn brass" onclick="openPromptModal()">+ Add prompt</button>
+      </div>
+    </div>
+    <div class="searchrow"><input type="text" id="searchbox" placeholder="Search prompts, tags, notes..." value="${esc(state.search)}" oninput="setSearch(this.value)"></div>
+    <div class="catmgmt">
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+        <span class="rowlabel">Categories</span>
+        <input id="newLibCatName" placeholder="New category, e.g. Portraits" style="flex:1;max-width:220px" onkeydown="if(event.key==='Enter')addLibCategory()">
+        <button class="btn sm" onclick="addLibCategory()">+ Add</button>
+      </div>
+      <div class="chiprow" id="catchips" style="margin-bottom:2px">${libCategoryChipsHTML()}</div>
+    </div>
+    <div class="rowlabel" style="margin-top:10px">Filter by tag</div>
+    <div class="chiprow" id="chiprow">${chipsHTML()}</div>
+  </div>
+  <div id="rollups">${rollupsHTML()}</div>`;
+}
+function refreshLibrary(){
+  if(view!=='library') return;
+  const c=$('#chiprow'); if(c) c.innerHTML=chipsHTML();
+  const cc=$('#catchips'); if(cc) cc.innerHTML=libCategoryChipsHTML();
+  const r=$('#rollups'); if(r) r.innerHTML=rollupsHTML();
+  const lc=$('#libcount'); if(lc) lc.textContent=libCountText();
+}
+function setSearch(v){ state.search=v; refreshLibrary(); }
+function toggleTagFilter(t){
+  const i=state.tagFilters.indexOf(t);
+  if(i===-1) state.tagFilters.push(t); else state.tagFilters.splice(i,1);
+  refreshLibrary();
+}
+function clearTagFilters(){ state.tagFilters=[]; refreshLibrary(); }
+
+/* ---------- Data & Security ---------- */
+/* "Stored now" — a plain statement of what is actually on disk, which is the thing
+   this app got wrong for a long time: it rendered from memory and never said whether
+   the write landed. The localStorage figure is read back OUT of storage rather than
+   computed from `db`, so it reflects what a reload would really find.
+   Image-store figures need an async IndexedDB pass, so viewData() renders the row set
+   with stats=null (placeholder) and refreshStoredNow() patches the container after —
+   the same targeted-DOM-write pattern the search box uses. */
+function fmtBytes(chars){
+  if(chars==null) return '—';
+  if(chars<1024) return chars+' B';
+  if(chars<1024*1024) return (chars/1024).toFixed(1)+' KB';
+  return (chars/(1024*1024)).toFixed(2)+' MB';
+}
+function storedNowHTML(stats){
+  const stored=localStorage.getItem(LS_KEY);
+  const metaChars=stored?stored.length:0;
+  const protCount=db.prompts.filter(p=>p.nsfw).length;
+  const catCount=(db.libCategories||[]).length;
+  const imgCount=stats?stats.count:null, imgChars=stats?stats.bytes:null;
+  return `<div class="kv" style="margin-top:10px">
+    <div>Prompts</div><div class="num">${db.prompts.length}</div>
+    <div>Protected</div><div class="num">${protCount}</div>
+    <div>Categories</div><div class="num">${catCount}</div>
+    <div>Reference images</div><div class="num">${imgCount==null?'…':imgCount}</div>
+    <div>Metadata</div><div class="num">${fmtBytes(metaChars)} in localStorage</div>
+    <div>Images</div><div class="num">${imgChars==null?'…':fmtBytes(imgChars)+' in IndexedDB'}</div>
+    <div>Storage key</div><div class="num">${LS_KEY}</div>
+    <div>Image store</div><div class="num">${idb?'available (IndexedDB)':'unavailable in this browser'}</div>
+    <div>Version</div><div class="num">v${APP_VERSION} · ${APP_BUILD}</div>
+  </div>`;
+}
+async function refreshStoredNow(){
+  const all=await idbEntries();
+  let count=0, bytes=0;
+  for(const id in all){
+    count++;
+    const rec=all[id];
+    bytes += (rec && rec.enc)
+      ? (((rec.blob&&rec.blob.ct)||'').length + ((rec.blob&&rec.blob.iv)||'').length)
+      : (((rec&&rec.data)||'').length);
+  }
+  const el=document.getElementById('storedNow');
+  if(el) el.innerHTML=storedNowHTML({count, bytes});
+}
+function viewData(){
+  const nsfwCount=db.prompts.filter(p=>p.nsfw).length;
+  let secBody;
+  if(!db.security){
+    secBody=`<div class="sub" style="margin:0">No PIN set yet — you'll be asked to create one the first time you mark a prompt Protected.</div>`;
+  } else if(sessionKey){
+    secBody=`<div class="sub" style="margin:0 0 10px">Unlocked for this browser session.</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" onclick="lockNow()">Lock now</button><button class="btn ghost" onclick="openPinChangeModal()">Change PIN</button></div>`;
+  } else {
+    secBody=`<div class="sub" style="margin:0 0 10px">Locked — enter your PIN to view protected prompts.</div>
+      <button class="btn brass" onclick="openPinUnlockModal()">Unlock</button>`;
+  }
+  return `
+  <div class="pagehead"><div><div class="eyebrow">Prompt Vault · Data</div><h1>Data &amp; Security</h1>
+    <div class="sub">Your data lives in this browser only. Export a backup to keep it safe or move it to another device.</div></div></div>
+  <div class="grid cols-2">
+    <div class="card">
+      <div class="cardhead"><h3>Backup &amp; restore</h3><span class="hint">your data, your file</span></div>
+      <div class="pad" style="display:flex;gap:10px;flex-wrap:wrap">
+        <button class="btn brass" onclick="exportJSON()">↓ Export backup (.json.gz)</button>
+        <button class="btn" onclick="exportEncryptedJSON()">↓ Export encrypted backup (.json.gz)</button>
+        <button class="btn" onclick="document.getElementById('imp').click()">↑ Import backup</button>
+        <input id="imp" type="file" accept=".json,.json.gz,.gz" style="display:none" onchange="importJSON(this)">
+      </div>
+      <div class="pad" style="padding-top:0">
+        <div class="sub" style="margin:0 0 6px">Protected prompts stay encrypted inside either backup file — the PIN is still required to read them after importing elsewhere.</div>
+        <div class="sub" style="margin:0">The encrypted backup goes further: the whole file, including prompts that aren't marked Protected, is unreadable without that same PIN. Uses whichever PIN protects your prompts — you'll be asked to unlock (or set one up) if needed.</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="cardhead"><h3>Protected content</h3><span class="hint">${nsfwCount} prompt${nsfwCount===1?'':'s'} protected</span></div>
+      <div class="pad">${secBody}</div>
+    </div>
+  </div>
+  <div class="card" style="margin-top:16px">
+    <div class="pad">
+      <b style="font-size:13.5px">Stored now</b>
+      <div id="storedNow">${storedNowHTML(null)}</div>
+    </div>
+  </div>
+  <div class="grid cols-1" style="margin-top:16px">
+    <div class="card" style="border-color:var(--loss-soft)">
+      <div class="cardhead" style="border-color:var(--loss-soft)"><h3 style="color:var(--loss)">Danger zone</h3></div>
+      <div class="pad"><button class="btn danger" onclick="resetAll()">Erase all data</button></div>
+    </div>
+  </div>
+  <p style="text-align:center;color:var(--faint);font-size:12px;margin-top:18px">Prompt Vault · app version <b style="color:var(--muted)">v${APP_VERSION}</b> · build ${APP_BUILD}<br>© 2026 Smaller Hammer · MIT Licence</p>`;
+}
+
+
+/* ============================ add/edit prompt modal ============================ */
+function closeModal(){ $('#modalRoot').innerHTML=''; }
+// The card thumbnail is cropped to a fixed aspect ratio; this shows the whole
+// stored image (uncropped, up to its saved resolution) with a shortcut into Edit.
+// ‹/› cycle through the other imaged prompts in the SAME category — whichever set
+// is currently visible in that rollup (so an active search/tag filter narrows the
+// cycle too, matching what's actually on screen).
+function openImageLightbox(id){
+  const p=db.prompts.find(x=>x.id===id); if(!p) return;
+  const c=p.nsfw?decryptedCache[p.id]:p;
+  if(!c || !imageFor(p)) return;
+  const catKey=p.categoryId||'__uncat__';
+  const ids=visibleList().filter(x=>{
+    if((x.categoryId||'__uncat__')!==catKey) return false;
+    return !!imageFor(x);
+  }).map(x=>x.id);
+  const idx=ids.indexOf(id);
+  lightboxState={ids, index: idx<0?0:idx};
+  renderLightbox();
+}
+function renderLightbox(){
+  const {ids, index}=lightboxState;
+  const id=ids[index];
+  const p=id ? db.prompts.find(x=>x.id===id) : null;
+  const c=p ? (p.nsfw?decryptedCache[p.id]:p) : null;
+  const im=imageFor(p);
+  if(!c || !im){ closeModal(); return; }
+  const multi=ids.length>1;
+  const tagChips=(c.tags||[]).map(t=>`<span class="tag">${esc(t)}</span>`).join('');
+  $('#modalRoot').innerHTML=`
+  <div class="scrim imglightbox" onclick="if(event.target===this)closeModal()">
+    <div class="modal" style="width:min(720px,96vw)">
+      <div class="mh"><h3 style="font-size:14px;color:var(--muted);font-weight:600">Reference image${multi?` · ${index+1} of ${ids.length}`:''}</h3><button class="iconbtn" onclick="closeModal()">✕</button></div>
+      <div style="position:relative">
+        ${multi?`<button class="lightbox-nav left" onclick="lightboxStep(-1)" title="Previous">‹</button>`:''}
+        <img src="${im.data}" style="display:block;width:100%;max-height:70vh;object-fit:contain;border-radius:8px;border:1px solid var(--line);background:var(--surface-2)">
+        ${multi?`<button class="lightbox-nav right" onclick="lightboxStep(1)" title="Next">›</button>`:''}
+      </div>
+      ${tagChips?`<div class="tagrow" style="margin-top:12px">${tagChips}</div>`:''}
+      <div class="foot">
+        <button class="btn ghost" onclick="closeModal()">Close</button>
+        <button class="btn brass" onclick="openPromptModal('${id}')">Edit</button>
+      </div>
+    </div>
+  </div>`;
+}
+function lightboxStep(delta){
+  if(!lightboxState.ids.length) return;
+  lightboxState.index=(lightboxState.index+delta+lightboxState.ids.length)%lightboxState.ids.length;
+  renderLightbox();
+}
+function renderImgPreview(){
+  if(!modalState.image) return '<div class="sub" style="margin-top:6px">No image attached.</div>';
+  return `<img class="imgprev" src="${modalState.image.data}"><div style="margin-top:6px"><button type="button" class="btn sm ghost" onclick="removeModalImage()">Remove image</button></div>`;
+}
+function onModalImagePicked(input){
+  const f=input.files[0]; if(!f) return;
+  resizeImageFile(f, img=>{ modalState.image=img; $('#imgPreviewWrap').innerHTML=renderImgPreview(); });
+}
+function removeModalImage(){ modalState.image=null; $('#imgPreviewWrap').innerHTML=renderImgPreview(); }
+function onModalNsfwToggle(cb){
+  if(cb.checked && !sessionKey){
+    cb.checked=false;
+    const draft={
+      promptText:$('#f_prompt').value,
+      negativePrompt:$('#f_negprompt').value,
+      seed:$('#f_seed').value,
+      width:$('#f_width').value,
+      height:$('#f_height').value,
+      tags:$('#f_tags').value,
+      comments:$('#f_comments').value,
+      image:modalState.image,
+      categoryId:$('#f_category').value,
+      nsfw:true
+    };
+    const id=modalState.id;
+    const after=()=>openPromptModal(id, draft);
+    if(!db.security) openPinSetupModal(after); else openPinUnlockModal(after);
+  }
+}
+function openPromptModal(id=null, draft=null){
+  const p=id ? db.prompts.find(x=>x.id===id) : null;
+  let content=null;
+  if(p){
+    content=p.nsfw?decryptedCache[p.id]:p;
+    if(p.nsfw && !content){ toast('Unlock protected prompts to edit this one'); return; }
+  }
+  const promptText=draft ? draft.promptText : (content?content.promptText:'');
+  const negativePrompt=draft ? (draft.negativePrompt||'') : (content?(content.negativePrompt||''):'');
+  const seed=draft ? (draft.seed||'') : (content?(content.seed||''):'');
+  const width=draft ? (draft.width||'') : (content&&content.width?content.width:'');
+  const height=draft ? (draft.height||'') : (content&&content.height?content.height:'');
+  const tagsStr=draft ? draft.tags : (content?(content.tags||[]).join(', '):'');
+  const comments=draft ? draft.comments : (content?content.comments:'');
+  const nsfw=draft ? draft.nsfw : (p?p.nsfw:false);
+  const image=draft && draft.image!==undefined ? draft.image : imageFor(p);
+  const categoryId=draft ? (draft.categoryId||'') : (p ? (p.categoryId||'') : '');
+  modalState={id, image, nsfw};
+  $('#modalRoot').innerHTML=`
+  <div class="scrim" onclick="if(event.target===this)closeModal()">
+    <div class="modal wide">
+      <div class="mh"><h3>${id?'Edit prompt':'Add prompt'}</h3><button class="iconbtn" onclick="closeModal()">✕</button></div>
+      <label class="fld">Positive prompt</label>
+      <textarea id="f_prompt" rows="12" placeholder="e.g. A weathered lighthouse at dusk, cinematic lighting...">${esc(promptText)}</textarea>
+      <label class="fld">Negative prompt (optional)</label>
+      <textarea id="f_negprompt" rows="2" placeholder="e.g. blurry, low quality, extra limbs...">${esc(negativePrompt)}</textarea>
+      <label class="fld">Reference image (optional)</label>
+      <input id="f_img" type="file" accept="image/*" onchange="onModalImagePicked(this)">
+      <div id="imgPreviewWrap">${renderImgPreview()}</div>
+      <label class="fld">Seed (optional)</label>
+      <input id="f_seed" placeholder="e.g. 1847293650" inputmode="numeric" value="${esc(seed)}">
+      <label class="fld">Width &amp; height (optional)</label>
+      <div style="display:flex;gap:8px">
+        <input id="f_width" type="number" min="1" step="1" placeholder="Width, e.g. 1024" oninput="updateWHRatio()" value="${esc(width)}">
+        <input id="f_height" type="number" min="1" step="1" placeholder="Height, e.g. 1536" oninput="updateWHRatio()" value="${esc(height)}">
+      </div>
+      <div id="wh_ratio" class="sub" style="margin-top:6px">${aspectRatioLabel(parseInt(width,10),parseInt(height,10)) ? 'Ratio: '+aspectRatioLabel(parseInt(width,10),parseInt(height,10)) : ''}</div>
+      <label class="fld">Category (optional)</label>
+      <select id="f_category">
+        <option value="">— Uncategorized —</option>
+        ${db.libCategories.map(c=>`<option value="${esc(c.id)}" ${categoryId===c.id?'selected':''}>${esc(c.name)}</option>`).join('')}
+      </select>
+      <label class="fld">Tags (comma separated)</label>
+      <input id="f_tags" placeholder="e.g. landscape, cinematic" list="tagsuggest" value="${esc(tagsStr)}">
+      <datalist id="tagsuggest">${allTags().map(t=>`<option value="${esc(t)}">`).join('')}</datalist>
+      <label class="fld">Notes / comments</label>
+      <textarea id="f_comments" rows="3" placeholder="Any notes about this prompt...">${esc(comments)}</textarea>
+      <div class="checkline"><input id="f_nsfw" type="checkbox" ${nsfw?'checked':''} onchange="onModalNsfwToggle(this)"><label for="f_nsfw" style="margin:0;font-size:13px;color:var(--ink)">Mark as Protected</label></div>
+      <div class="foot">
+        ${id?`<button class="btn danger" style="margin-right:auto" onclick="deletePromptConfirm('${id}')">Delete</button>`:''}
+        <button class="btn ghost" onclick="closeModal()">Cancel</button>
+        <button class="btn brass" onclick="savePromptModal()">${id?'Save changes':'Add prompt'}</button>
+      </div>
+    </div>
+  </div>`;
+  setTimeout(()=>$('#f_prompt')&&$('#f_prompt').focus(),30);
+}
+async function savePromptModal(){
+  const promptText=$('#f_prompt').value.trim();
+  if(!promptText) return toast('Enter a prompt');
+  const negativePrompt=$('#f_negprompt').value.trim();
+  const seed=$('#f_seed').value.trim();
+  const width=parseInt($('#f_width').value,10)||null;
+  const height=parseInt($('#f_height').value,10)||null;
+  const tags=$('#f_tags').value.split(',').map(t=>t.trim()).filter(Boolean);
+  const comments=$('#f_comments').value.trim();
+  const nsfw=$('#f_nsfw').checked;
+  const image=modalState.image;
+  const categoryId=$('#f_category').value || null;
+  if(nsfw && !sessionKey) return toast('Unlock protection first');
+  const now=new Date().toISOString();
+  const isEdit=!!modalState.id;
+  const contentObj={promptText, negativePrompt, seed, width, height, tags, comments, image};
+  const meta=Object.assign({}, contentObj); delete meta.image;   // what goes to localStorage / `enc`
+  let p=modalState.id ? db.prompts.find(x=>x.id===modalState.id) : null;
+  let imgOk=true;
+  if(nsfw){
+    const enc=await encryptJSON(meta, sessionKey);
+    if(p){ p.nsfw=true; p.enc=enc; delete p.promptText; delete p.negativePrompt; delete p.seed; delete p.width; delete p.height; delete p.tags; delete p.comments; delete p.image; p.categoryId=categoryId; p.updatedAt=now; }
+    else { p={id:uid(), createdAt:now, updatedAt:now, nsfw:true, enc, categoryId}; db.prompts.push(p); }
+    decryptedCache[p.id]=contentObj;
+    delete imageCache[p.id];
+    if(image && image.data) imgOk=await idbPut(p.id, {enc:true, blob:await encryptJSON({data:image.data, w:image.w, h:image.h}, sessionKey)});
+    else await idbDelete(p.id);
+  } else {
+    if(p){ p.nsfw=false; delete p.enc; Object.assign(p, meta); delete p.image; p.categoryId=categoryId; p.updatedAt=now; }
+    else { p={id:uid(), createdAt:now, updatedAt:now, nsfw:false, categoryId, ...meta}; db.prompts.push(p); }
+    delete decryptedCache[p.id];
+    if(image && image.data){
+      imgOk=await idbPut(p.id, {enc:false, data:image.data, w:image.w, h:image.h});
+      if(imgOk) imageCache[p.id]={data:image.data, w:image.w, h:image.h};
+    } else {
+      await idbDelete(p.id); delete imageCache[p.id];
+    }
+  }
+  const ok=saveDB();
+  closeModal(); render();
+  if(ok && imgOk) toast(isEdit?'Prompt updated':'Prompt added');
+}
+function deletePromptConfirm(id){
+  if(!confirm('Delete this prompt? This cannot be undone.')) return;
+  db.prompts=db.prompts.filter(p=>p.id!==id);
+  delete decryptedCache[id]; delete imageCache[id];
+  idbDelete(id);
+  const ok=saveDB(); closeModal(); render();
+  if(ok) toast('Prompt deleted');
+}
+function copyPrompt(id){
+  const p=db.prompts.find(x=>x.id===id); if(!p) return;
+  const content=p.nsfw?decryptedCache[p.id]:p;
+  if(!content) return toast('Unlock to copy');
+  navigator.clipboard.writeText(content.promptText||'').then(()=>toast('Prompt copied')).catch(()=>toast('Copy failed — clipboard blocked'));
+}
+
+/* ============================ PIN modals ============================ */
+function cancelPinFlow(){ pinAfterFn=null; closeModal(); render(); }
+function openPinSetupModal(afterFn){
+  pinAfterFn=afterFn||null;
+  $('#modalRoot').innerHTML=`
+  <div class="scrim" onclick="if(event.target===this)cancelPinFlow()">
+    <div class="modal">
+      <div class="mh"><h3>Set a PIN</h3><button class="iconbtn" onclick="cancelPinFlow()">✕</button></div>
+      <div class="sub" style="margin:0 0 4px">This PIN encrypts your protected prompts. There's no recovery if you forget it — the content is encrypted, not just hidden.</div>
+      <label class="fld">New PIN</label><input id="pin1" type="password" autocomplete="off">
+      <label class="fld">Confirm PIN</label><input id="pin2" type="password" autocomplete="off" onkeydown="if(event.key==='Enter')confirmPinSetup()">
+      <div class="foot"><button class="btn ghost" onclick="cancelPinFlow()">Cancel</button><button class="btn brass" onclick="confirmPinSetup()">Set PIN</button></div>
+    </div>
+  </div>`;
+  setTimeout(()=>$('#pin1')&&$('#pin1').focus(),30);
+}
+async function confirmPinSetup(){
+  const a=$('#pin1').value, b=$('#pin2').value;
+  if(a.length<4) return toast('PIN must be at least 4 characters');
+  if(a!==b) return toast("PINs don't match");
+  await setupPin(a);
+  toast('PIN set — unlocked for this session');
+  const fn=pinAfterFn; pinAfterFn=null;
+  if(fn) fn(); else { closeModal(); render(); }
+}
+function openPinUnlockModal(afterFn){
+  pinAfterFn=afterFn||null;
+  $('#modalRoot').innerHTML=`
+  <div class="scrim" onclick="if(event.target===this)cancelPinFlow()">
+    <div class="modal">
+      <div class="mh"><h3>Unlock protected prompts</h3><button class="iconbtn" onclick="cancelPinFlow()">✕</button></div>
+      <label class="fld">PIN</label><input id="pinu" type="password" autocomplete="off" onkeydown="if(event.key==='Enter')confirmPinUnlock()">
+      <div class="foot"><button class="btn ghost" onclick="cancelPinFlow()">Cancel</button><button class="btn brass" onclick="confirmPinUnlock()">Unlock</button></div>
+    </div>
+  </div>`;
+  setTimeout(()=>$('#pinu')&&$('#pinu').focus(),30);
+}
+async function confirmPinUnlock(){
+  const pin=$('#pinu').value;
+  const ok=await tryUnlock(pin);
+  if(!ok) return toast('Incorrect PIN');
+  toast('Unlocked');
+  const fn=pinAfterFn; pinAfterFn=null;
+  if(fn) fn(); else { closeModal(); render(); }
+}
+function openPinChangeModal(){
+  $('#modalRoot').innerHTML=`
+  <div class="scrim" onclick="if(event.target===this)closeModal()">
+    <div class="modal">
+      <div class="mh"><h3>Change PIN</h3><button class="iconbtn" onclick="closeModal()">✕</button></div>
+      <label class="fld">New PIN</label><input id="cpin1" type="password" autocomplete="off">
+      <label class="fld">Confirm new PIN</label><input id="cpin2" type="password" autocomplete="off" onkeydown="if(event.key==='Enter')confirmPinChange()">
+      <div class="foot"><button class="btn ghost" onclick="closeModal()">Cancel</button><button class="btn brass" onclick="confirmPinChange()">Change PIN</button></div>
+    </div>
+  </div>`;
+  setTimeout(()=>$('#cpin1')&&$('#cpin1').focus(),30);
+}
+async function confirmPinChange(){
+  const a=$('#cpin1').value, b=$('#cpin2').value;
+  if(a.length<4) return toast('PIN must be at least 4 characters');
+  if(a!==b) return toast("PINs don't match");
+  await changePin(a);
+  closeModal(); render(); toast('PIN changed');
+}
+
+/* ---------- Gzip backup compression ----------
+   Backup exports can run to multiple MB of formatted JSON (mostly from embedded
+   image thumbnails). Gzipping cuts that substantially using the browser's built-in
+   CompressionStream/DecompressionStream (gzip) — no external library needed.
+   Falls back to a plain, uncompressed .json file if unsupported. Protected prompts'
+   `enc` blobs are exported as-is (still ciphertext) — the PIN is required after
+   import too. */
+function supportsGzipStreams(){ return typeof CompressionStream!=='undefined' && typeof DecompressionStream!=='undefined'; }
+function gzipStringToBlob(str){
+  const bytes=new TextEncoder().encode(str);
+  const cs=new CompressionStream('gzip');
+  const writer=cs.writable.getWriter();
+  writer.write(bytes); writer.close();
+  return new Response(cs.readable).blob();
+}
+function gzipStringToBytes(str){
+  const bytes=new TextEncoder().encode(str);
+  const cs=new CompressionStream('gzip');
+  const writer=cs.writable.getWriter();
+  writer.write(bytes); writer.close();
+  return new Response(cs.readable).arrayBuffer().then(buf=>new Uint8Array(buf));
+}
+function gunzipBytesToText(bytes){
+  const ds=new DecompressionStream('gzip');
+  const writer=ds.writable.getWriter();
+  writer.write(bytes); writer.close();
+  return new Response(ds.readable).blob().then(blob=>blob.text());
+}
+function triggerDownload(blob, filename){
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=filename; a.click(); URL.revokeObjectURL(a.href);
+}
+function downloadJSONBackup(obj, filenameBase){
+  const json=JSON.stringify(obj, null, 2);
+  if(supportsGzipStreams()){ gzipStringToBlob(json).then(blob=>triggerDownload(blob, filenameBase+'.json.gz')); }
+  else { triggerDownload(new Blob([json], {type:'application/json'}), filenameBase+'.json'); }
+}
+function readBackupFileAsText(file){
+  return file.arrayBuffer().then(buf=>{
+    const bytes=new Uint8Array(buf);
+    const isGzip=bytes.length>2 && bytes[0]===0x1f && bytes[1]===0x8b;
+    if(isGzip && supportsGzipStreams()){
+      const ds=new DecompressionStream('gzip');
+      const writer=ds.writable.getWriter();
+      writer.write(bytes); writer.close();
+      return new Response(ds.readable).blob().then(blob=>blob.text());
+    }
+    return new Blob([bytes]).text();
+  });
+}
+
+/* ============================ data io ============================ */
+/* Backups carry the image store in a top-level `images` map (backupVersion 2) rather
+   than inline on each prompt, so a backup is still one self-contained file. Protected
+   images travel as the same ciphertext they sit in locally — exactly as safe as `enc`
+   already was, and no unlock needed to export. `images` is NEVER written to
+   localStorage: it exists only inside a backup file. Importing a v2 backup into
+   v3.15-or-earlier loses the images (that version reads them from the prompt records),
+   so this is a one-way door — keep a pre-upgrade backup. */
+async function buildBackupObject(){
+  const images=await idbEntries();
+  const out=Object.assign({}, db, {backupVersion:BACKUP_VERSION, images});
+  return out;
+}
+async function exportJSON(){ downloadJSONBackup(await buildBackupObject(), 'promptvault-'+todayStr()); toast('Backup exported'); }
+
+// Encrypts the ENTIRE database (not just Protected prompts) with the same PIN-derived
+// key used for Protected content. The exported file is a small JSON wrapper holding
+// the salt/iterations (not secret — needed to re-derive the key from the PIN on
+// import) plus one AES-GCM ciphertext of the gzip-compressed database. Requires the
+// vault to be unlocked (or a PIN to be created first) since the same key is reused.
+async function exportEncryptedJSON(){
+  if(!sessionKey){
+    if(!db.security){ openPinSetupModal(()=>exportEncryptedJSON()); return; }
+    openPinUnlockModal(()=>exportEncryptedJSON()); return;
+  }
+  const json=JSON.stringify(await buildBackupObject());
+  let payloadBytes, gz;
+  if(supportsGzipStreams()){ payloadBytes=await gzipStringToBytes(json); gz=true; }
+  else { payloadBytes=new TextEncoder().encode(json); gz=false; }
+  const iv=crypto.getRandomValues(new Uint8Array(12));
+  const ct=await crypto.subtle.encrypt({name:'AES-GCM', iv}, sessionKey, payloadBytes);
+  const wrapper={
+    promptVaultEncryptedBackup:1,
+    salt: db.security.salt,
+    iterations: db.security.iterations,
+    gz,
+    iv: buf2b64(iv),
+    ct: buf2b64(ct)
+  };
+  downloadJSONBackup(wrapper, 'promptvault-encrypted-'+todayStr());
+  toast('Encrypted backup exported');
+}
+
+/* Applies the image half of an imported backup: v2's `images` map, plus any legacy
+   inline images from a v1 backup. Replaces the store wholesale — an import is a
+   restore, not a merge, matching what the metadata half already does. Protected
+   prompts' images in a v1 backup are inside `enc` and migrate at the next unlock. */
+async function applyImportedImages(imgMap){
+  await idbClear();
+  let ok=true;
+  if(imgMap && typeof imgMap==='object'){
+    for(const id in imgMap){ if(!await idbPut(id, imgMap[id])) ok=false; }
+  }
+  for(const p of db.prompts){
+    if(p.nsfw || !p.image || !p.image.data) continue;
+    if(!await idbPut(p.id, {enc:false, data:p.image.data, w:p.image.w, h:p.image.h})) ok=false;
+    delete p.image;
+  }
+  delete db.images; delete db.backupVersion;   // never persist these to localStorage
+  await loadImageCache();
+  return ok;
+}
+function importJSON(input){
+  const f=input.files[0]; if(!f) return;
+  readBackupFileAsText(f).then(text=>{
+    let data;
+    try{ data=JSON.parse(text); }catch(e){ toast('Not a valid backup file'); input.value=''; return; }
+    if(data && data.promptVaultEncryptedBackup){
+      pendingEncryptedImport=data;
+      input.value='';
+      openImportPinModal();
+      return;
+    }
+    if(!Array.isArray(data.prompts)){ toast('Not a valid backup file'); input.value=''; return; }
+    const imgMap=data.images||null;
+    db=data; if(db.security===undefined) db.security=null; if(!Array.isArray(db.libCategories)) db.libCategories=[]; db.prompts.forEach(p=>{ if(p.categoryId===undefined) p.categoryId=null; }); if(!db.expandedCategories || typeof db.expandedCategories!=='object') db.expandedCategories={};
+    sessionKey=null; decryptedCache={};
+    input.value='';
+    applyImportedImages(imgMap).then(imgOk=>{
+      const ok=saveDB();
+      render();
+      if(ok && imgOk) toast('Backup imported — unlock again to view protected prompts');
+      else toast('Import could not be saved — see the warning at the top');
+    });
+  });
+}
+function openImportPinModal(){
+  $('#modalRoot').innerHTML=`
+  <div class="scrim" onclick="if(event.target===this)cancelImportPin()">
+    <div class="modal">
+      <div class="mh"><h3>Enter PIN to import</h3><button class="iconbtn" onclick="cancelImportPin()">✕</button></div>
+      <div class="sub" style="margin:0 0 4px">This backup is fully encrypted. Enter the PIN it was exported with.</div>
+      <label class="fld">PIN</label><input id="pinimp" type="password" autocomplete="off" onkeydown="if(event.key==='Enter')confirmImportPin()">
+      <div class="foot"><button class="btn ghost" onclick="cancelImportPin()">Cancel</button><button class="btn brass" onclick="confirmImportPin()">Import</button></div>
+    </div>
+  </div>`;
+  setTimeout(()=>$('#pinimp')&&$('#pinimp').focus(),30);
+}
+function cancelImportPin(){ pendingEncryptedImport=null; closeModal(); }
+async function confirmImportPin(){
+  const pin=$('#pinimp').value;
+  const wrap=pendingEncryptedImport;
+  if(!wrap) return closeModal();
+  try{
+    const key=await deriveKey(pin, wrap.salt, wrap.iterations);
+    const iv=new Uint8Array(b642buf(wrap.iv));
+    const plainBuf=await crypto.subtle.decrypt({name:'AES-GCM', iv}, key, b642buf(wrap.ct));
+    const bytes=new Uint8Array(plainBuf);
+    const jsonText=(wrap.gz && supportsGzipStreams()) ? await gunzipBytesToText(bytes) : new TextDecoder().decode(bytes);
+    const data=JSON.parse(jsonText);
+    if(!Array.isArray(data.prompts)) throw new Error('unexpected shape');
+    const imgMap=data.images||null;
+    db=data; if(db.security===undefined) db.security=null; if(!Array.isArray(db.libCategories)) db.libCategories=[]; db.prompts.forEach(p=>{ if(p.categoryId===undefined) p.categoryId=null; }); if(!db.expandedCategories || typeof db.expandedCategories!=='object') db.expandedCategories={};
+    sessionKey=key; decryptedCache={};
+    const imgOk=await applyImportedImages(imgMap);
+    for(const p of db.prompts){
+      if(!(p.nsfw && p.enc)) continue;
+      let c; try{ c=await decryptJSON(p.enc, key); }catch(e){ continue; }
+      if(!(c.image && c.image.data)){
+        const rec=await idbGet(p.id);
+        c.image=null;
+        if(rec && rec.enc && rec.blob){ try{ c.image=await decryptJSON(rec.blob, key); }catch(e){ c.image=null; } }
+      }
+      decryptedCache[p.id]=c;
+    }
+    const ok=saveDB(); pendingEncryptedImport=null;
+    closeModal(); render();
+    if(ok && imgOk) toast('Encrypted backup imported and unlocked');
+    else toast('Import could not be saved — see the warning at the top');
+  }catch(e){
+    toast('Incorrect PIN, or the file is corrupted');
+  }
+}
+async function resetAll(){
+  if(confirm('Erase all prompts and PIN protection? This cannot be undone.')){
+    db={version:1, dataVersion:1, security:null, prompts:[], libCategories:[], expandedCategories:{}};
+    sessionKey=null; decryptedCache={}; imageCache={};
+    await idbClear();
+    const ok=saveDB(); render();
+    if(ok) toast('All data erased');
+  }
+}
+
+/* ============================ boot ============================ */
+document.addEventListener('keydown', e=>{
+  if(e.key==='Escape'){ pinAfterFn=null; closeModal(); return; }
+  if(document.querySelector('.imglightbox')){
+    if(e.key==='ArrowLeft'){ lightboxStep(-1); }
+    else if(e.key==='ArrowRight'){ lightboxStep(1); }
+  }
+});
+/* Boot is async now: the image store has to be open, migrated and cached before the
+   first render, or every card would flash 'no image' on load. */
+async function boot(){
+  idb=await openImageDB();
+  if(!idb) setStorageAlert('Image store unavailable — reference images cannot be loaded or saved in this browser.');
+  await migrateInlineImages();
+  await loadImageCache();
+  render();
+}
+boot();
+</script>
+</body>
+</html>
