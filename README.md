@@ -5,6 +5,7 @@ Please read the associated user guide before using, important information regard
 
 Tip of the day: Stick a finger in your ear on the bomb side, it'll very briefly cut down your noise exposure..
 Keep safe and its always the green wire.. Chonky
+~~~
  (\(\
  (._.)
 c(___)
